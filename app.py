@@ -23,9 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("app")
 
 app = Flask(__name__)
-CORS(app, origins=["https://quiet-brioche-6cf8d5.netlify.app",
-                   "http://localhost:*",
-                   "http://127.0.0.1:*"])    # ### CAMBIO AQUÍ ### agrega tu Netlify URL
+CORS(app, origins="*")   # ### CAMBIO AQUÍ ### wildcard — acepta file://, Netlify y localhost
 
 # ─── Estado en memoria (persiste en SQLite) ────────────────────────────────────
 
@@ -219,6 +217,49 @@ def api_actualizar_estado(lid):
     con.execute("UPDATE oportunidades SET estado=? WHERE id=?", (nuevo_estado, lid))
     con.commit()
     return jsonify({"ok": True, "id": lid, "estado": nuevo_estado})
+
+# ─── Cotizaciones proxy ────────────────────────────────────────────────────────
+# ### CAMBIO AQUÍ ### endpoint que el dashboard llama en lugar de APIs directas
+# El backend no tiene restricciones CORS ni origin=null — soporta file:// y Netlify
+
+import requests as req_lib
+
+@app.route("/api/cotizaciones")
+def api_cotizaciones():
+    """Proxy server-side para APIs de cotizaciones — sin problemas de CORS."""
+    resultado = {}
+
+    # Dólares ARS
+    try:
+        r = req_lib.get("https://dolarapi.com/v1/dolares", timeout=8)
+        resultado["ars"] = r.json()
+    except Exception as e:
+        resultado["ars"] = None
+        resultado["ars_error"] = str(e)
+
+    # Metales (metals.live)
+    try:
+        r = req_lib.get("https://api.metals.live/v1/spot", timeout=8)
+        resultado["metales"] = r.json()
+    except Exception as e:
+        resultado["metales"] = None
+        resultado["metales_error"] = str(e)
+
+    # FX internacional (frankfurter)
+    try:
+        r = req_lib.get("https://api.frankfurter.app/latest?from=USD&to=GBP,BRL,CLP,UYU,JPY,CHF", timeout=8)
+        resultado["fx"] = r.json()
+    except Exception as e:
+        # Fallback open.er-api
+        try:
+            r2 = req_lib.get("https://open.er-api.com/v6/latest/USD", timeout=8)
+            resultado["fx"] = r2.json()
+        except Exception as e2:
+            resultado["fx"] = None
+            resultado["fx_error"] = str(e2)
+
+    return jsonify({"ok": True, **resultado})
+
 
 # ─── Scheduler (cron cada 4 horas) ────────────────────────────────────────────
 
