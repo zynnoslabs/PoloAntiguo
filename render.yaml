@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: polo-buscador
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --timeout 120
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false          # Lo pones manualmente en Render dashboard
+      - key: SERPAPI_KEY
+        sync: false          # Opcional
+      - key: EBAY_TOKEN
+        sync: false          # Opcional
+      - key: TRIGGER_SECRET
+        generateValue: true  # Render genera uno automáticamente
+      - key: DB_PATH
+        value: /tmp/db.sqlite
+    disk:
+      name: polo-data
+      mountPath: /data
+      sizeGB: 1
