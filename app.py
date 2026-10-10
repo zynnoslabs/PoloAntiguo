@@ -6,7 +6,7 @@ El dashboard de Netlify fetchea desde /api/oportunidades.
 Deploy en Render:
 - Tipo: Web Service
 - Build Command: pip install -r requirements.txt
-- Start Command: python app.py
+- Start Command: gunicorn app:app --workers 1 --timeout 120
 - Variables: GROQ_API_KEY, EBAY_TOKEN (opcional), SERPAPI_KEY (opcional)
 """
 
@@ -62,7 +62,6 @@ def guardar_oportunidades(items: list[dict]):
     ahora = datetime.now(timezone.utc).isoformat()
     for it in items:
         try:
-            # Solo insertar si no existe — preserva el estado (contactado/descartado)
             con.execute("""
                 INSERT OR IGNORE INTO oportunidades
                 (id,fuente,tipo,titulo,precio,moneda,url,imagen,ubicacion,
@@ -140,11 +139,6 @@ def home():
 
 @app.route("/api/oportunidades")
 def api_oportunidades():
-    """
-    GET /api/oportunidades
-    Query params:
-      ?limite=50&offset=0&categoria=reloj&tipo=vendedor
-    """
     limite = int(request.args.get("limite", 50))
     offset = int(request.args.get("offset", 0))
     categoria = request.args.get("categoria", None)
@@ -152,13 +146,11 @@ def api_oportunidades():
 
     items = leer_oportunidades(limite=min(limite, 200), offset=offset)
 
-    # Filtros opcionales
     if categoria:
         items = [i for i in items if i["categoria"] == categoria]
     if tipo:
         items = [i for i in items if i["tipo"] == tipo]
 
-    # Stats
     total = len(items)
     compradores = sum(1 for i in items if i["tipo"] == "comprador")
     vendedores = sum(1 for i in items if i["tipo"] == "vendedor")
@@ -187,10 +179,6 @@ def api_status():
 
 @app.route("/api/trigger", methods=["POST"])
 def api_trigger():
-    """
-    POST /api/trigger — dispara una búsqueda manual.
-    Requiere header X-API-KEY = TRIGGER_SECRET env var.
-    """
     secret = os.environ.get("TRIGGER_SECRET", "polo2024")
     if request.headers.get("X-API-KEY") != secret:
         return jsonify({"ok": False, "error": "No autorizado"}), 401
@@ -204,10 +192,6 @@ def api_trigger():
 
 @app.route("/api/oportunidades/<lid>/estado", methods=["PUT"])
 def api_actualizar_estado(lid):
-    """
-    PUT /api/oportunidades/{id}/estado
-    Body: {"estado": "contactado" | "descartado" | "nuevo"}
-    """
     data = request.get_json() or {}
     nuevo_estado = data.get("estado")
     if nuevo_estado not in ("contactado", "descartado", "nuevo"):
@@ -219,8 +203,6 @@ def api_actualizar_estado(lid):
     return jsonify({"ok": True, "id": lid, "estado": nuevo_estado})
 
 # ─── Cotizaciones proxy ────────────────────────────────────────────────────────
-# ### CAMBIO AQUÍ ### endpoint que el dashboard llama en lugar de APIs directas
-# El backend no tiene restricciones CORS ni origin=null — soporta file:// y Netlify
 
 import requests as req_lib
 
@@ -229,7 +211,6 @@ def api_cotizaciones():
     """Proxy server-side para APIs de cotizaciones — sin problemas de CORS."""
     resultado = {}
 
-    # Dólares ARS
     try:
         r = req_lib.get("https://dolarapi.com/v1/dolares", timeout=8)
         resultado["ars"] = r.json()
@@ -237,7 +218,6 @@ def api_cotizaciones():
         resultado["ars"] = None
         resultado["ars_error"] = str(e)
 
-    # Metales (metals.live)
     try:
         r = req_lib.get("https://api.metals.live/v1/spot", timeout=8)
         resultado["metales"] = r.json()
@@ -245,12 +225,10 @@ def api_cotizaciones():
         resultado["metales"] = None
         resultado["metales_error"] = str(e)
 
-    # FX internacional (frankfurter)
     try:
         r = req_lib.get("https://api.frankfurter.app/latest?from=USD&to=GBP,BRL,CLP,UYU,JPY,CHF", timeout=8)
         resultado["fx"] = r.json()
     except Exception as e:
-        # Fallback open.er-api
         try:
             r2 = req_lib.get("https://open.er-api.com/v6/latest/USD", timeout=8)
             resultado["fx"] = r2.json()
@@ -261,27 +239,24 @@ def api_cotizaciones():
     return jsonify({"ok": True, **resultado})
 
 
-# ─── Scheduler (cron cada 4 horas) ────────────────────────────────────────────
+# ─── Scheduler + búsqueda inicial (fuera de __main__ para funcionar con gunicorn) ───
+
+### CAMBIO AQUÍ ### arranca al importar el módulo, no solo con python app.py
+init_oportunidades_db()
 
 scheduler = BackgroundScheduler(timezone="America/Argentina/Buenos_Aires")
 scheduler.add_job(run_busqueda, "interval", hours=4, id="busqueda_periodica")
+scheduler.start()
+
+hilo_inicial = threading.Thread(target=run_busqueda, daemon=True)
+hilo_inicial.start()
+
+log.info("Scheduler y búsqueda inicial arrancados (compatible con gunicorn)")
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-
-    # Iniciar DB
-    init_oportunidades_db()
-
-    # Primera búsqueda al arrancar (en hilo para no bloquear)
-    hilo_inicial = threading.Thread(target=run_busqueda, daemon=True)
-    hilo_inicial.start()
-
-    # Iniciar scheduler
-    scheduler.start()
-    log.info(f"Buscador iniciado. Puerto {port}. Ciclo cada 4 horas.")
-
     try:
         app.run(host="0.0.0.0", port=port, debug=False)
     finally:
