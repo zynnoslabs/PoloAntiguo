@@ -12,6 +12,56 @@ log = logging.getLogger("analizador")
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 
+# ─── Detección automática de modelo disponible ────────────────────────────────
+### CAMBIO AQUÍ ### detecta qué modelos están activos en la cuenta y elige el mejor
+
+_MODELO_CACHE = None  # se detecta una vez al arrancar y se reutiliza
+
+_PREFERENCIA_MODELOS = [
+    "llama-3.1-8b-instant",
+    "llama3-8b-8192",
+    "gemma2-9b-it",
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.8-27b",
+]
+
+def _detectar_modelo() -> str:
+    global _MODELO_CACHE
+    if _MODELO_CACHE:
+        return _MODELO_CACHE
+
+    # Si hay override manual en env var, usarlo directamente
+    override = os.environ.get("GROQ_MODEL", "")
+    if override:
+        _MODELO_CACHE = override
+        log.info(f"Modelo Groq (env): {override}")
+        return override
+
+    # Consultar qué modelos están disponibles en la cuenta
+    try:
+        disponibles = {m.id for m in client.models.list().data}
+        for m in _PREFERENCIA_MODELOS:
+            if m in disponibles:
+                _MODELO_CACHE = m
+                log.info(f"Modelo Groq detectado: {m}")
+                return m
+        # Si ninguno de la lista está disponible, usar el primero que exista
+        if disponibles:
+            m = sorted(disponibles)[0]
+            _MODELO_CACHE = m
+            log.warning(f"Modelo Groq (fallback): {m}")
+            return m
+    except Exception as e:
+        log.warning(f"No se pudo listar modelos Groq: {e}")
+
+    # Último recurso absoluto
+    _MODELO_CACHE = "openai/gpt-oss-20b"
+    log.warning(f"Modelo Groq (último recurso): {_MODELO_CACHE}")
+    return _MODELO_CACHE
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Perfil de Juan Carlos — qué le interesa
 PERFIL_JC = """
 Polo Antiguo es una casa de antigüedades argentina dirigida por Juan Carlos Santos.
@@ -70,7 +120,7 @@ Responde solo con el JSON."""
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",  ### CAMBIO AQUÍ ### llama-3.3-70b-versatile fue removido de Groq
+            model=_detectar_modelo(),  ### CAMBIO AQUÍ ### modelo detectado automáticamente al arrancar
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt_user},
@@ -114,7 +164,7 @@ def analizar_todos(listados: list[dict], solo_relevantes: bool = True) -> list[d
         if resultado.get("relevante"):
             relevantes.append(resultado)
         if i < len(listados) - 1:
-            time.sleep(2.0)   # ### CAMBIO AQUÍ ### respetar rate limit Groq free tier
+            time.sleep(2.0)   # respetar rate limit Groq
 
     log.info(f"Analizados: {len(analizados)} | Relevantes: {len(relevantes)}")
     return relevantes if solo_relevantes else analizados
