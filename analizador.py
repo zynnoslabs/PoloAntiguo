@@ -70,7 +70,7 @@ Responde solo con el JSON."""
 
     try:
         response = client.chat.completions.create(
-            model="llama3-70b-8192",  ### CAMBIO AQUÍ ### llama-3.3-70b-versatile fue removido de Groq
+            model="llama-3.1-8b-instant",  ### CAMBIO AQUÍ ### modelo activo en Groq (oct 2026)
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt_user},
